@@ -1,0 +1,8 @@
+Board type: CC2530
+Device type: Router
+Manufacturer name: andrejsoucek
+Model ID: soucek-motor
+
+Output pins:
+P02: Output 1, UART (UART: 9600 8N1, Packet end: None, Byte: 239)
+P03: Output 2, UART (UART: 9600 8N1, Packet end: None, Byte: 239)
