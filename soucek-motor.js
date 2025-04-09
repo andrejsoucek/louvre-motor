@@ -13,8 +13,6 @@ const CMD_SET_MAX = 0x04;
 const CMD_GET_POS = 0x05;
 const CMD_RESET_CAL = 0x06;
 const CMD_GET_CAL = 0x07;
-const CMD_SET_REVERSE = 0x08;
-const CMD_GET_REVERSE = 0x09;
 const CMD_SET_SPEED = 0x0a;
 const CMD_GET_SPEED = 0x0b;
 const CMD_STOP = 0x0c;
@@ -97,9 +95,6 @@ const fz_uart = {
                 case CMD_GET_CAL:
                     result.calibrated = data[3] === 0x01;
                     break;
-                case CMD_GET_REVERSE:
-                    result.reverse = data[3] === 0x01;
-                    break;
                 case CMD_GET_SPEED:
                     result.speed = (data[3] << 8) | data[4];
                     break;
@@ -115,7 +110,7 @@ const fz_uart = {
 };
 
 const tz_uart = {
-    key: ['action', 'move', 'calibration', 'calibrated', 'reverse', 'position', 'state', 'speed'],
+    key: ['action', 'move', 'calibration', 'calibrated', 'position', 'state', 'speed'],
     convertSet: async (entity, key, value, meta) => {
         let frame = [];
         switch (key) {
@@ -153,9 +148,6 @@ const tz_uart = {
                     frame = [0x05, STX, 0x01, CMD_RESET_CAL, 0x01 ^ CMD_RESET_CAL, ETX];
                 }
                 break;
-            case 'reverse':
-                frame = [0x05, STX, 0x01, CMD_SET_REVERSE, 0x01 ^ CMD_SET_REVERSE, ETX];
-                break;
             case 'action':
                 frame = value;
                 break;
@@ -173,9 +165,6 @@ const tz_uart = {
                 break;
             case 'calibrated':
                 frame = [0x05, STX, 0x01, CMD_GET_CAL, 0x01 ^ CMD_GET_CAL, ETX];
-                break;
-            case 'reverse':
-                frame = [0x05, STX, 0x01, CMD_GET_REVERSE, 0x01 ^ CMD_GET_REVERSE, ETX];
                 break;
             case 'speed':
                 frame = [0x05, STX, 0x01, CMD_GET_SPEED, 0x01 ^ CMD_GET_SPEED, ETX];
@@ -197,7 +186,6 @@ const device = {
     toZigbee: [tz_uart],
     exposes: [
         e.cover_position(),
-        exposes.binary('reverse', ea.STATE_SET, true, false).withDescription('Reverse motor direction.'),
         exposes.binary('calibrated', ea.STATE_GET).withDescription('Motor calibration status.'),
         exposes
             .numeric('speed', ea.ALL)

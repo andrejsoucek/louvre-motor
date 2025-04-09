@@ -14,15 +14,12 @@ AccelStepper stepper(AccelStepper::DRIVER, 2, 3);
 #define CMD_GET_POS     0x05
 #define CMD_RESET_CAL   0x06
 #define CMD_GET_CAL     0x07
-#define CMD_SET_REVERSE 0x08
-#define CMD_GET_REVERSE 0x09
 #define CMD_SET_SPEED   0x0A
 #define CMD_GET_SPEED   0x0B
 #define CMD_STOP        0x0C
 #define CMD_NACK        0x15
 
 int speed = 300;
-int direction = 1;
 long minPosition = 0;
 long maxPosition = 0;
 bool isMinSet = false;
@@ -40,8 +37,6 @@ void setup() {
 
   delay(15000);
   sendCalibrationStatus();
-  delay(500);
-  sendReverseStatus();
   delay(500);
   sendSpeed();
 }
@@ -169,15 +164,6 @@ void processFrame(byte* frame, byte length) {
       sendCalibrationStatus();
       break;
 
-    case CMD_SET_REVERSE:
-      direction *= -1;
-      sendReverseStatus();
-      break;
-
-    case CMD_GET_REVERSE:
-      sendReverseStatus();
-      break;
-
     case CMD_SET_SPEED:
       if(dataLen == 3) {
         int val = (int)frame[3] << 8 | (int)frame[4];
@@ -226,12 +212,6 @@ void sendPosition() {
 
 void sendCalibrationStatus() {
   byte frame[] = {STX, 0x02, CMD_GET_CAL, isCalibrated, 0x00, ETX};
-  frame[4] = frame[1] ^ frame[2] ^ frame[3];
-  Serial.write(frame, sizeof(frame));
-}
-
-void sendReverseStatus() {
-  byte frame[] = {STX, 0x02, CMD_GET_REVERSE, (byte)(direction == -1), 0x00, ETX};
   frame[4] = frame[1] ^ frame[2] ^ frame[3];
   Serial.write(frame, sizeof(frame));
 }
