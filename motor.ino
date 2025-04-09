@@ -16,13 +16,15 @@ AccelStepper stepper(AccelStepper::DRIVER, 2, 3);
 #define CMD_GET_CAL     0x07
 #define CMD_SET_REVERSE 0x08
 #define CMD_GET_REVERSE 0x09
-#define CMD_ACK         0x06
+#define CMD_SET_SPEED   0x0A
+#define CMD_GET_SPEED   0x0B
+#define CMD_STOP        0x0C
 #define CMD_NACK        0x15
 
-unsigned int speed = 500;
-unsigned int minPosition = 0;
-unsigned int maxPosition = 0;
+int speed = 300;
 int direction = 1;
+long minPosition = 0;
+long maxPosition = 0;
 bool isMinSet = false;
 bool isMaxSet = false;
 bool isCalibrated = false;
@@ -32,11 +34,16 @@ void setup() {
   Serial.begin(9600);
   pinMode(enablePin, OUTPUT);
   digitalWrite(enablePin, HIGH);
-  stepper.setMaxSpeed(800);
+  stepper.setMaxSpeed(speed);
 
-  while(!Serial) {} 
+  while(!Serial) {}
 
+  delay(15000);
   sendCalibrationStatus();
+  delay(500);
+  sendReverseStatus();
+  delay(500);
+  sendSpeed();
 }
 
 void loop() {
@@ -63,18 +70,18 @@ void updateMotor() {
 void handleSerialCommands() {
   static byte buffer[32];
   static byte index = 0;
-  
+
   while (Serial.available()) {
     byte b = Serial.read();
-    
+
     if(b == STX && index == 0) {
       index = 1;
       buffer[0] = b;
-    } 
+    }
     else if(index > 0) {
       if(index < sizeof(buffer)) {
         buffer[index++] = b;
-        
+
         if(b == ETX && index >= 5) {
           processFrame(buffer, index);
           index = 0;
@@ -94,42 +101,55 @@ void processFrame(byte* frame, byte length) {
 
   byte cmd = frame[2];
   byte dataLen = frame[1];
-  
+
   switch(cmd) {
     case CMD_MOVE:
       if(dataLen == 5) {
-        long steps = (long)frame[3] << 24 | 
+        long steps = (long)frame[3] << 24 |
                     (long)frame[4] << 16 |
                     (long)frame[5] << 8 |
                     (long)frame[6];
-        stepper.move(steps * direction);
-        stepper.setSpeed(500 * direction);
-        sendAck();
+
+        stepper.move(steps);
+        stepper.setSpeed(steps > 0 ? speed : -speed);
       }
       break;
 
     case CMD_SET_POS:
-      if(dataLen == 3 && isCalibrated) {
+      if(dataLen == 2 && isCalibrated) {
         byte percent = frame[3];
         long target = map(percent, 0, 100, minPosition, maxPosition);
         stepper.moveTo(target);
-        stepper.setSpeed(500 * (target > stepper.currentPosition() ? 1 : -1));
-        sendAck();
+        stepper.setSpeed(speed * (target > stepper.currentPosition() ? 1 : -1));
       }
       break;
 
     case CMD_SET_MIN:
+      stepper.setCurrentPosition(0);
       minPosition = stepper.currentPosition();
       isMinSet = true;
       checkCalibration();
-      sendAck();
+      sendCalibrationStatus();
+      if (isCalibrated) {
+        delay(500);
+        sendPosition();
+      }
       break;
 
     case CMD_SET_MAX:
       maxPosition = stepper.currentPosition();
       isMaxSet = true;
+      Serial.println("Max position set");
+      Serial.println(maxPosition);
+      Serial.println("Min position set");
+      Serial.println(minPosition);
+
       checkCalibration();
-      sendAck();
+      sendCalibrationStatus();
+      if (isCalibrated) {
+        delay(500);
+        sendPosition();
+      }
       break;
 
     case CMD_GET_POS:
@@ -142,7 +162,7 @@ void processFrame(byte* frame, byte length) {
 
     case CMD_RESET_CAL:
       resetCalibration();
-      sendAck();
+      sendCalibrationStatus();
       break;
 
     case CMD_GET_CAL:
@@ -151,11 +171,28 @@ void processFrame(byte* frame, byte length) {
 
     case CMD_SET_REVERSE:
       direction *= -1;
-      sendAck();
+      sendReverseStatus();
       break;
 
     case CMD_GET_REVERSE:
       sendReverseStatus();
+      break;
+
+    case CMD_SET_SPEED:
+      if(dataLen == 3) {
+        int val = (int)frame[3] << 8 | (int)frame[4];
+        stepper.setMaxSpeed(val);
+        speed = val;
+      }
+      sendSpeed();
+      break;
+
+    case CMD_GET_SPEED:
+      sendSpeed();
+      break;
+
+    case CMD_STOP:
+      stepper.stop();
       break;
 
     default:
@@ -172,42 +209,36 @@ bool validateChecksum(byte* frame, byte length) {
   return checksum == frame[length-2];
 }
 
-void sendAck() {
-  byte frame[] = {STX, 0x03, CMD_ACK, 0x00, ETX};
-  frame[3] = frame[1] ^ frame[2];
-  Serial.write(frame, sizeof(frame));
-}
-
 void sendNack(byte errorCode) {
-  byte frame[] = {STX, 0x04, CMD_NACK, errorCode, 0x00, ETX};
+  byte frame[] = {STX, 0x02, CMD_NACK, errorCode, 0x00, ETX};
   frame[4] = frame[1] ^ frame[2] ^ frame[3];
   Serial.write(frame, sizeof(frame));
 }
 
 void sendPosition() {
-  byte frame[8];
   long absPos = stepper.currentPosition();
-  float percentage = map(absPos, minPosition, maxPosition, 0, 100);
-  
-  frame[0] = STX;
-  frame[1] = 0x06;
-  frame[2] = CMD_GET_POS;
-  frame[3] = (byte)percentage;
+  long percentage = map(absPos, minPosition, maxPosition, 0, 100);
+  byte frame[] = {STX, 0x02, CMD_GET_POS, (byte)percentage, 0x00, ETX};
   frame[4] = frame[1] ^ frame[2] ^ frame[3];
-  frame[5] = ETX;
-  
+
   Serial.write(frame, sizeof(frame));
 }
 
 void sendCalibrationStatus() {
-  byte frame[] = {STX, 0x04, CMD_GET_CAL, isCalibrated, 0x00, ETX};
+  byte frame[] = {STX, 0x02, CMD_GET_CAL, isCalibrated, 0x00, ETX};
   frame[4] = frame[1] ^ frame[2] ^ frame[3];
   Serial.write(frame, sizeof(frame));
 }
 
 void sendReverseStatus() {
-  byte frame[] = {STX, 0x04, CMD_GET_REVERSE, (byte)(direction == -1), 0x00, ETX};
+  byte frame[] = {STX, 0x02, CMD_GET_REVERSE, (byte)(direction == -1), 0x00, ETX};
   frame[4] = frame[1] ^ frame[2] ^ frame[3];
+  Serial.write(frame, sizeof(frame));
+}
+
+void sendSpeed() {
+  byte frame[] = {STX, 0x03, CMD_GET_SPEED, (byte)(speed >> 8), (byte)(speed & 0xFF), 0x00, ETX};
+  frame[5] = frame[1] ^ frame[2] ^ frame[3] ^ frame[4];
   Serial.write(frame, sizeof(frame));
 }
 
