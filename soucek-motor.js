@@ -1,8 +1,4 @@
-const exposes = require('zigbee-herdsman-converters/lib/exposes');
-const fz = require('zigbee-herdsman-converters/converters/fromZigbee');
-
-const ea = exposes.access;
-const e = exposes.presets;
+import { presets as e, access as ea } from "zigbee-herdsman-converters/lib/exposes";
 
 // Protocol constants
 const STX = 0xaa;
@@ -177,42 +173,28 @@ const tz_uart = {
     },
 };
 
-const device = {
+export default {
     zigbeeModel: ['soucek-motor'],
     model: 'soucek-motor',
     vendor: 'andrejsoucek',
     description: 'Motor controller with calibration status',
-    fromZigbee: [fz.ignore_basic_report, fz_uart],
+    fromZigbee: [fz_uart],
     toZigbee: [tz_uart],
     exposes: [
         e.cover_position(),
-        exposes.binary('calibrated', ea.STATE_GET).withDescription('Motor calibration status.'),
-        exposes
+        e.binary('calibrated', ea.STATE_GET).withDescription('Motor calibration status.'),
+        e
             .numeric('speed', ea.ALL)
-            .withDescription('Motor speed (0-500)')
-            .withUnit('rpm')
+            .withDescription('Motor speed (0-2000)')
             .withValueMin(0)
-            .withValueMax(500),
-        exposes
-            .enum('move', ea.SET, ['-1600', '-800', '-400', '100', '400', '800', '1600'])
+            .withValueMax(2000),
+        e
+            .enum('move', ea.SET, ['-2000', '-1600', '-800', '-400', '-100', '100', '400', '800', '1600', '2000'])
             .withDescription('Move the motor by desired amount of steps.'),
-        exposes
+        e
             .enum('calibration', ea.SET, ['closed', 'opened', 'reset'])
             .withDescription('Set min and max limits of the motor.'),
-        exposes.text('action', ea.STATE_SET).withDescription('UART commands'),
+        e.text('action', ea.STATE_SET).withDescription('UART commands'),
     ],
-    meta: {
-        multiEndpoint: true,
-    },
-    endpoint: (device) => ({
-        l1: 1,
-        action: 1,
-        l2: 2,
-    }),
-    configure: async (device, coordinatorEndpoint, logger) => {
-        const endpoint = device.getEndpoint(1);
-        await endpoint.read('genBasic', ['modelId', 'swBuildId', 'powerSource']);
-    },
 };
 
-module.exports = device;
