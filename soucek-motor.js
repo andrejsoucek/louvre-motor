@@ -4,14 +4,14 @@ import { presets as e, access as ea } from "zigbee-herdsman-converters/lib/expos
 const STX = 0xaa;
 const CMD_MOVE = 0x01;
 const CMD_SET_POS = 0x02;
-const CMD_SET_MIN = 0x03;
-const CMD_SET_MAX = 0x04;
-const CMD_GET_POS = 0x05;
-const CMD_RESET_CAL = 0x06;
-const CMD_GET_CAL = 0x07;
-const CMD_SET_SPEED = 0x0a;
-const CMD_GET_SPEED = 0x0b;
-const CMD_STOP = 0x0c;
+const CMD_HOME = 0x03;
+const CMD_GET_POS = 0x04;
+const CMD_GET_CAL = 0x05;
+const CMD_SET_SPEED = 0x06;
+const CMD_GET_SPEED = 0x07;
+const CMD_STOP = 0x08;
+const CMD_SET_TRAVEL = 0x09;
+const CMD_GET_TRAVEL = 0x0a;
 const ETX = 0x55;
 
 function createMoveCmd(steps) {
@@ -41,6 +41,11 @@ function createPositionCmd(percentage) {
     return [cmd.length, ...cmd];
 }
 
+function createSimpleCmd(cmdId) {
+    const cmd = [STX, 0x01, cmdId, 0x01 ^ cmdId, ETX];
+    return [cmd.length, ...cmd];
+}
+
 function createSpeedCmd(speed) {
     // Protocol frame structure: [STX, LEN, CMD, SPEED (2 bytes), CHECKSUM, ETX]
     const speedBytes = new Uint8Array(2);
@@ -55,6 +60,23 @@ function createSpeedCmd(speed) {
     }
 
     const cmd = [STX, len, CMD_SET_SPEED, ...speedBytes, checksum, ETX];
+    return [cmd.length, ...cmd];
+}
+
+function createTravelCmd(travelSteps) {
+    const stepBytes = new Uint8Array(4);
+    stepBytes[0] = (travelSteps >>> 24) & 0xff;
+    stepBytes[1] = (travelSteps >>> 16) & 0xff;
+    stepBytes[2] = (travelSteps >>> 8) & 0xff;
+    stepBytes[3] = travelSteps & 0xff;
+
+    const len = 0x05;
+    let checksum = len ^ CMD_SET_TRAVEL;
+    for (const byte of stepBytes) {
+        checksum ^= byte;
+    }
+
+    const cmd = [STX, len, CMD_SET_TRAVEL, ...stepBytes, checksum, ETX];
     return [cmd.length, ...cmd];
 }
 
@@ -94,6 +116,9 @@ const fz_uart = {
                 case CMD_GET_SPEED:
                     result.speed = (data[3] << 8) | data[4];
                     break;
+                case CMD_GET_TRAVEL:
+                    result.travel_steps = data[3] * 0x1000000 + data[4] * 0x10000 + data[5] * 0x100 + data[6];
+                    break;
                 default:
                     result.action = asString(data);
             }
@@ -106,7 +131,7 @@ const fz_uart = {
 };
 
 const tz_uart = {
-    key: ['action', 'move', 'calibration', 'calibrated', 'position', 'state', 'speed'],
+    key: ['action', 'home', 'move', 'calibrated', 'position', 'state', 'speed', 'travel_steps'],
     convertSet: async (entity, key, value, meta) => {
         let frame = [];
         switch (key) {
@@ -127,22 +152,19 @@ const tz_uart = {
             case 'position':
                 frame = createPositionCmd(Number(value));
                 break;
+            case 'home':
+                if (value === 'start') {
+                    frame = createSimpleCmd(CMD_HOME);
+                }
+                break;
             case 'move':
                 frame = createMoveCmd(Number(value));
                 break;
             case 'speed':
                 frame = createSpeedCmd(Number(value));
                 break;
-            case 'calibration':
-                if (value === 'closed') {
-                    frame = [0x05, STX, 0x01, CMD_SET_MIN, 0x01 ^ CMD_SET_MIN, ETX];
-                }
-                if (value === 'opened') {
-                    frame = [0x05, STX, 0x01, CMD_SET_MAX, 0x01 ^ CMD_SET_MAX, ETX];
-                }
-                if (value === 'reset') {
-                    frame = [0x05, STX, 0x01, CMD_RESET_CAL, 0x01 ^ CMD_RESET_CAL, ETX];
-                }
+            case 'travel_steps':
+                frame = createTravelCmd(Number(value));
                 break;
             case 'action':
                 frame = value;
@@ -165,6 +187,9 @@ const tz_uart = {
             case 'speed':
                 frame = [0x05, STX, 0x01, CMD_GET_SPEED, 0x01 ^ CMD_GET_SPEED, ETX];
                 break;
+            case 'travel_steps':
+                frame = [0x05, STX, 0x01, CMD_GET_TRAVEL, 0x01 ^ CMD_GET_TRAVEL, ETX];
+                break;
         }
 
         await entity.write('genMultistateValue', {
@@ -186,15 +211,21 @@ export default {
         e
             .numeric('speed', ea.ALL)
             .withDescription('Motor speed (0-2000)')
+            .withUnit('rpm')
             .withValueMin(0)
             .withValueMax(2000),
         e
-            .enum('move', ea.SET, ['-2000', '-1600', '-800', '-400', '-100', '100', '400', '800', '1600', '2000'])
+            .numeric('travel_steps', ea.ALL)
+            .withDescription('Persisted number of steps from closed (0%) to open (100%).')
+            .withValueMin(0),
+        e
+            .enum('home', ea.SET, ['start'])
+            .withDescription('Start a manual homing cycle toward the closed endstop.'),
+        e
+            .enum('move', ea.SET, ['-1600', '-800', '-400', '100', '400', '800', '1600'])
             .withDescription('Move the motor by desired amount of steps.'),
         e
-            .enum('calibration', ea.SET, ['closed', 'opened', 'reset'])
-            .withDescription('Set min and max limits of the motor.'),
-        e.text('action', ea.STATE_SET).withDescription('UART commands'),
+            .text('action', ea.STATE_SET)
+            .withDescription('UART commands'),
     ],
 };
-

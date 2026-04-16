@@ -65,15 +65,15 @@ Responses produced by the firmware are plain native UART frames beginning with `
 | `ETX` | `0x55` |
 | `CMD_MOVE` | `0x01` |
 | `CMD_SET_POS` | `0x02` |
-| `CMD_SET_MIN` | `0x03` |
-| `CMD_SET_MAX` | `0x04` |
-| `CMD_GET_POS` | `0x05` |
-| `CMD_RESET_CAL` | `0x06` |
-| `CMD_GET_CAL` | `0x07` |
-| `CMD_SET_SPEED` | `0x0A` |
-| `CMD_GET_SPEED` | `0x0B` |
-| `CMD_STOP` | `0x0C` |
-| `CMD_NACK` | `0x15` |
+| `CMD_HOME` | `0x03` |
+| `CMD_GET_POS` | `0x04` |
+| `CMD_GET_CAL` | `0x05` |
+| `CMD_SET_SPEED` | `0x06` |
+| `CMD_GET_SPEED` | `0x07` |
+| `CMD_STOP` | `0x08` |
+| `CMD_SET_TRAVEL` | `0x09` |
+| `CMD_GET_TRAVEL` | `0x0A` |
+| `CMD_NACK` | `0x0B` |
 
 ## Command Reference
 
@@ -117,15 +117,15 @@ Native request:
 
 Meaning:
 
-- Maps `0..100` to the calibrated range `minPosition..maxPosition`.
-- Only works when the motor is calibrated.
+- `0%` is the absolute closed position after a successful home.
+- Any percentage is mapped to the persisted travel range `0..travelSteps`.
+- Absolute positioning only works when the device is homed and a non-zero travel range has been stored.
 
 Response behavior:
 
-- No immediate response is sent.
-- When motion finishes, the firmware sends the current position with `CMD_GET_POS`.
+- Non-zero positioning sends `CMD_GET_POS` when motion finishes.
 
-### `0x03` Set minimum position: `CMD_SET_MIN`
+### `0x03` Start homing: `CMD_HOME`
 
 Request payload: none
 
@@ -137,16 +137,16 @@ Native request:
 
 Meaning:
 
-- Resets the current stepper position to `0` using `setCurrentPosition(0)`.
-- Stores that position as `minPosition`.
-- Marks the minimum limit as configured.
+- Starts a homing cycle toward the closed endstop.
+- The motor moves in the negative direction until the endstop is hit.
+- When the endstop is reached, the current position is forced to `0`.
 
 Response behavior:
 
-- Sends calibration status with `CMD_GET_CAL`.
-- If both limits are now valid, sends a position report after a `500 ms` delay.
+- Sends `CMD_GET_CAL` when homing completes.
+- Sends `CMD_GET_POS` if travel is configured.
 
-### `0x04` Set maximum position: `CMD_SET_MAX`
+### `0x04` Get current position: `CMD_GET_POS`
 
 Request payload: none
 
@@ -156,17 +156,22 @@ Native request:
 [AA, 01, 04, checksum, 55]
 ```
 
-Meaning:
+Response payload:
 
-- Stores the current stepper position as `maxPosition`.
-- Marks the maximum limit as configured.
+- 1 byte position in percent
 
-Response behavior:
+Native response:
 
-- Sends calibration status with `CMD_GET_CAL`.
-- If both limits are now valid, sends a position report after a `500 ms` delay.
+```text
+[AA, 02, 04, percent, checksum, 55]
+```
 
-### `0x05` Get current position: `CMD_GET_POS`
+Behavior:
+
+- Returns the current position only if the device is calibrated.
+- If not calibrated, the firmware returns `CMD_NACK` with error code `0x03`.
+
+### `0x05` Get calibration state: `CMD_GET_CAL`
 
 Request payload: none
 
@@ -178,50 +183,6 @@ Native request:
 
 Response payload:
 
-- 1 byte position in percent
-
-Native response:
-
-```text
-[AA, 02, 05, percent, checksum, 55]
-```
-
-Behavior:
-
-- Returns the current position only if the device is calibrated.
-- If not calibrated, the firmware returns `CMD_NACK` with error code `0x03`.
-
-### `0x06` Reset calibration: `CMD_RESET_CAL`
-
-Request payload: none
-
-Native request:
-
-```text
-[AA, 01, 06, checksum, 55]
-```
-
-Meaning:
-
-- Clears both calibration flags.
-- Resets `minPosition` and `maxPosition` to `0`.
-
-Response behavior:
-
-- Sends calibration status with `CMD_GET_CAL`.
-
-### `0x07` Get calibration state: `CMD_GET_CAL`
-
-Request payload: none
-
-Native request:
-
-```text
-[AA, 01, 07, checksum, 55]
-```
-
-Response payload:
-
 - 1 byte boolean-like status
 - `0x00` = not calibrated
 - `0x01` = calibrated
@@ -229,10 +190,10 @@ Response payload:
 Native response:
 
 ```text
-[AA, 02, 07, status, checksum, 55]
+[AA, 02, 05, status, checksum, 55]
 ```
 
-### `0x0A` Set speed: `CMD_SET_SPEED`
+### `0x06` Set speed: `CMD_SET_SPEED`
 
 Request payload:
 
@@ -242,7 +203,7 @@ Request payload:
 Native request:
 
 ```text
-[AA, 03, 0A, speed_hi, speed_lo, checksum, 55]
+[AA, 03, 06, speed_hi, speed_lo, checksum, 55]
 ```
 
 Meaning:
@@ -254,14 +215,14 @@ Response behavior:
 
 - Immediately sends the current speed using `CMD_GET_SPEED`.
 
-### `0x0B` Get speed: `CMD_GET_SPEED`
+### `0x07` Get speed: `CMD_GET_SPEED`
 
 Request payload: none
 
 Native request:
 
 ```text
-[AA, 01, 0B, checksum, 55]
+[AA, 01, 07, checksum, 55]
 ```
 
 Response payload:
@@ -272,28 +233,74 @@ Response payload:
 Native response:
 
 ```text
-[AA, 03, 0B, speed_hi, speed_lo, checksum, 55]
+[AA, 03, 07, speed_hi, speed_lo, checksum, 55]
 ```
 
-### `0x0C` Stop motion: `CMD_STOP`
+### `0x08` Stop motion: `CMD_STOP`
 
 Request payload: none
 
 Native request:
 
 ```text
-[AA, 01, 0C, checksum, 55]
+[AA, 01, 08, checksum, 55]
 ```
 
 Meaning:
 
-- Calls `stepper.stop()`.
+- Stops the current motion.
 
 Response behavior:
 
-- No explicit response frame is sent.
+- Sends `CMD_GET_POS` when the device is calibrated.
 
-### `0x15` Negative acknowledgement: `CMD_NACK`
+### `0x09` Set open travel steps: `CMD_SET_TRAVEL`
+
+Request payload:
+
+- 4 bytes unsigned integer
+- Big-endian order
+
+Native request:
+
+```text
+[AA, 05, 09, step3, step2, step1, step0, checksum, 55]
+```
+
+Meaning:
+
+- Stores the number of steps from closed (`0%`) to open (`100%`).
+- The value is persisted in EEPROM.
+- The device becomes fully calibrated only after it has both a valid stored travel and a successful homing cycle.
+
+Response behavior:
+
+- Sends calibration status with `CMD_GET_CAL`.
+- Sends the stored travel with `CMD_GET_TRAVEL`.
+- If the device is already homed, also sends `CMD_GET_POS`.
+
+### `0x0A` Get open travel steps: `CMD_GET_TRAVEL`
+
+Request payload: none
+
+Native request:
+
+```text
+[AA, 01, 0A, checksum, 55]
+```
+
+Response payload:
+
+- 4 bytes unsigned integer
+- Big-endian order
+
+Native response:
+
+```text
+[AA, 05, 0A, step3, step2, step1, step0, checksum, 55]
+```
+
+### `0x0B` Negative acknowledgement: `CMD_NACK`
 
 Response payload:
 
@@ -302,7 +309,7 @@ Response payload:
 Native response:
 
 ```text
-[AA, 02, 15, error, checksum, 55]
+[AA, 02, 0B, error, checksum, 55]
 ```
 
 Observed error codes in the firmware:
@@ -351,11 +358,19 @@ Absolute position is always represented as a single percentage byte.
 
 The device becomes calibrated when:
 
-- minimum position has been set,
-- maximum position has been set,
-- and `minPosition != maxPosition`.
+- it has successfully homed to the closed endstop in the current boot session,
+- and a non-zero open travel distance is available from EEPROM or from `CMD_SET_TRAVEL`.
 
-Setting the minimum limit always resets the current step count to zero first.
+Homing uses the sensor on `D9` configured as `INPUT_PULLUP`, so the endstop is active when the pin reads `LOW`.
+
+### Homing model
+
+- Homing direction is negative.
+- Opening movement is positive.
+- Boot starts a homing cycle automatically.
+- Manual homing is triggered with `CMD_HOME`.
+- When the endstop is hit, the firmware calls `setCurrentPosition(0)`.
+- If the endstop is not reached within the configured search distance, the homing attempt fails and the device remains uncalibrated.
 
 ### Position semantics in the Zigbee converter
 
@@ -368,7 +383,7 @@ This means the public Zigbee state is binary-like, even though the firmware supp
 
 ### Startup reports
 
-After boot, the firmware waits about `15 seconds`, then sends:
+After boot, the firmware begins homing immediately. It still emits the startup reports after about `15 seconds`:
 
 1. calibration status (`CMD_GET_CAL` response format)
 2. speed report (`CMD_GET_SPEED` response format) after an additional `500 ms`
@@ -391,14 +406,14 @@ The custom Zigbee converter exposes these high-level controls:
 | `state=CLOSE` | `CMD_SET_POS` with `0` |
 | `state=STOP` | `CMD_STOP` |
 | `position` | `CMD_SET_POS` with `0..100` |
+| `home=start` | `CMD_HOME` |
 | `move` | `CMD_MOVE` |
 | `speed` | `CMD_SET_SPEED` |
-| `calibration=closed` | `CMD_SET_MIN` |
-| `calibration=opened` | `CMD_SET_MAX` |
-| `calibration=reset` | `CMD_RESET_CAL` |
+| `travel_steps` | `CMD_SET_TRAVEL` / `CMD_GET_TRAVEL` |
 | `get position` | `CMD_GET_POS` |
 | `get calibrated` | `CMD_GET_CAL` |
 | `get speed` | `CMD_GET_SPEED` |
+| `get travel_steps` | `CMD_GET_TRAVEL` |
 
 The converter currently limits `move` in its expose definition to these string values:
 
@@ -415,20 +430,20 @@ However, the firmware itself accepts any signed 32-bit step count that fits the 
 Request:
 
 ```text
-AA 01 07 06 55
+AA 01 05 04 55
 ```
 
-Reason: `01 ^ 07 = 06`
+Reason: `01 ^ 05 = 04`
 
 ### Calibration status = calibrated
 
 Response:
 
 ```text
-AA 02 07 01 04 55
+AA 02 05 01 06 55
 ```
 
-Reason: `02 ^ 07 ^ 01 = 04`
+Reason: `02 ^ 05 ^ 01 = 06`
 
 ### Set position to 100%
 
@@ -448,20 +463,31 @@ Zigbee-written payload:
 
 The leading `06` is the converter-added frame length.
 
+### Set open travel to 16000 steps
+
+Native frame:
+
+```text
+AA 05 09 00 00 3E 80 B2 55
+```
+
+Reason: `05 ^ 09 ^ 00 ^ 00 ^ 3E ^ 80 = B2`
+
 ### Stop
 
 Native frame:
 
 ```text
-AA 01 0C 0D 55
+AA 01 08 09 55
 ```
 
-Reason: `01 ^ 0C = 0D`
+Reason: `01 ^ 08 = 09`
 
 ## Notes and Constraints
 
 - There is no positive acknowledgement frame for successful write commands.
 - Some commands produce a state report rather than a dedicated acknowledgement.
-- `CMD_SET_POS` does nothing unless calibration has already been completed.
+- `CMD_SET_POS` requires a successful home and a stored travel distance.
+- `CMD_HOME` is the explicit way to re-home the motor after boot or after a mechanical desynchronization.
 - The firmware validates only the checksum before dispatching a command. Payload length checks are command-specific.
 - Unknown or malformed commands return `CMD_NACK` only in some cases. For example, bad checksum and unknown command are explicitly handled.
