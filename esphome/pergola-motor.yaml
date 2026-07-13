@@ -1,0 +1,226 @@
+# ESPHome replacement for the CC2530 + Arduino Nano stack.
+# One ESP32 drives the DRV8825 directly and talks to Home Assistant natively.
+#
+# Wiring (ESP32 DevKit):
+#   GPIO25 -> DRV8825 STEP
+#   GPIO26 -> DRV8825 DIR
+#   GPIO27 -> DRV8825 EN     (active low: low = driver enabled)
+#   GPIO32 <- endstop sensor output (see voltage note below!)
+#   5V from buck (12V -> 5V) -> ESP32 5V/VIN pin
+#   DRV8825 VMOT -> 12V + 100 uF electrolytic at the driver
+#   Grounds: star point at PSU; DRV8825 GND and logic GND as separate wires
+#
+# Endstop: inductive proximity sensor, 10-30V supply, NPN NO output
+# (open collector — only ever pulls to GND, never sources voltage).
+# Sensor power from the 12V rail, output DIRECT to GPIO32, no divider.
+# Internal pullup + inverted below = ON when metal detected (pin LOW).
+
+esphome:
+  name: pergola-motor
+  friendly_name: Pergola strecha sever
+  on_boot:
+    priority: -100
+    then:
+      # Home only once HA is connected, so the run is visible in logs/UI.
+      # Timeout fallback: after a power cut with HA down, still home.
+      - wait_until:
+          condition:
+            api.connected:
+          timeout: 60s
+      - script.execute: home_motor
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+globals:
+  # Steps from closed (0%) to open (100%). Same semantics as the old
+  # firmware's travel_steps; persisted across reboots like the EEPROM was.
+  - id: travel_steps
+    type: int
+    restore_value: true
+    initial_value: '7000'
+
+  # True only after the endstop has physically triggered since boot.
+  # Deliberately not persisted: every power cycle requires a fresh home
+  # before the cover will accept move commands.
+  - id: homed
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+stepper:
+  - platform: a4988   # DRV8825-compatible (STEP/DIR interface)
+    id: motor
+    step_pin: GPIO25
+    dir_pin: GPIO26
+    # DRV8825 EN is active low. sleep_pin is driven "awake" while moving,
+    # inverted so EN goes low (enabled) during motion and high (disabled,
+    # no coil current, no heat) at rest — same as the old firmware did.
+    sleep_pin:
+      number: GPIO27
+      inverted: true
+    max_speed: 1000 steps/s
+    acceleration: inf
+    deceleration: inf
+
+binary_sensor:
+  - platform: gpio
+    id: endstop
+    name: Endstop
+    pin:
+      number: GPIO32
+      mode:
+        input: true
+        pullup: true
+      inverted: true   # active (pressed) when the pin reads LOW
+    filters:
+      # Debounce boot transients and motor-wire EMI. Costs ~10 steps of
+      # overshoot at the endstop (1000 steps/s * 10 ms) — negligible.
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      # Hitting the closed endstop always re-zeros the position.
+      - globals.set:
+          id: homed
+          value: 'true'
+      - stepper.report_position:
+          id: motor
+          position: 0
+      - if:
+          condition:
+            script.is_running: home_motor
+          then:
+            - script.stop: home_motor
+            - stepper.set_target:
+                id: motor
+                target: 0
+
+  - platform: template
+    name: Homed
+    lambda: return id(homed);
+
+script:
+  - id: home_motor
+    mode: restart
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: endstop
+          then:
+            # Already sitting on the endstop (e.g. roof closed through a
+            # power outage). No OFF->ON transition will come, so on_press
+            # can't do the zeroing — do it here without moving.
+            - globals.set:
+                id: homed
+                value: 'true'
+            - stepper.report_position:
+                id: motor
+                position: 0
+            - stepper.set_target:
+                id: motor
+                target: 0
+          else:
+            # Drive toward the endstop from anywhere within the travel
+            # range. Mirrors the old homingSearchSteps = 120000 margin.
+            - stepper.report_position:
+                id: motor
+                position: 120000
+            - stepper.set_target:
+                id: motor
+                target: 0
+            - wait_until:
+                condition:
+                  binary_sensor.is_on: endstop
+                timeout: 150s
+            # on_press above zeroes the position; if we timed out
+            # instead, stop where we are and stay un-homed.
+            - stepper.set_target:
+                id: motor
+                target: !lambda return id(motor).current_position;
+
+cover:
+  - platform: template
+    name: Roof
+    device_class: shutter
+    has_position: true
+    lambda: |-
+      // Position is meaningless until a home has succeeded.
+      if (!id(homed) || id(travel_steps) <= 0) return {};
+      return (float) id(motor).current_position / (float) id(travel_steps);
+    open_action:
+      - if:
+          condition:
+            lambda: return id(homed);
+          then:
+            - stepper.set_target:
+                id: motor
+                target: !lambda return id(travel_steps);
+    close_action:
+      - if:
+          condition:
+            lambda: return id(homed);
+          then:
+            - stepper.set_target:
+                id: motor
+                target: 0
+    stop_action:
+      # Stop is always allowed, homed or not.
+      - stepper.set_target:
+          id: motor
+          target: !lambda return id(motor).current_position;
+    position_action:
+      - if:
+          condition:
+            lambda: return id(homed);
+          then:
+            - stepper.set_target:
+                id: motor
+                target: !lambda return (int) (pos * id(travel_steps));
+
+number:
+  - platform: template
+    name: Speed
+    id: speed_setting
+    unit_of_measurement: steps/s
+    min_value: 100
+    max_value: 2000
+    step: 50
+    initial_value: 1000
+    restore_value: true
+    optimistic: true
+    set_action:
+      - lambda: id(motor).set_max_speed(x);
+
+  - platform: template
+    name: Travel steps
+    id: travel_setting
+    min_value: 1000
+    max_value: 100000
+    step: 100
+    restore_value: true
+    optimistic: true
+    set_action:
+      - globals.set:
+          id: travel_steps
+          value: !lambda return (int) x;
+
+button:
+  - platform: template
+    name: Home
+    on_press:
+      - script.execute: home_motor
+
+  - platform: restart
+    name: Restart
